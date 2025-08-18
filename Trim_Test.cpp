@@ -146,7 +146,7 @@ bool Trim_VBG(CFunction *pFunction,int TestNO_target)
 		Reg[0x1040].read(readback);
 		FOR_EACH_SITE(nSiteIndex)
 		{	
-			Global_trimcode[nSiteIndex]=get_trim_code_LookupTable(global_Target_array[nSiteIndex],global_Pre[nSiteIndex], global_LSB, global_Trim_table_size,code_queue, ratio_queue, 
+			Global_trimcode[nSiteIndex]=get_trim_code_LookupTable(global_Target_array[nSiteIndex],global_Pre[nSiteIndex], global_LSB, global_Trim_table_size, code_queue, ratio_queue, 
 																	  global_BitHigh, global_BitLow, global_trimReg_addr ,DIFF);
 		}
 	
@@ -248,3 +248,135 @@ bool Trim_VBG(CFunction *pFunction,int TestNO_target)
 	return true;
 }
 
+//=========================== Measure VPTAT_OFS ===========================//
+void measure_Trim_VPTAT_OFS()
+{
+    double VN1[SITE_MAX], VN2[SITE_MAX], VP1[SITE_MAX], VP2[SITE_MAX];
+    double VN[SITE_MAX], VP[SITE_MAX];
+
+    // Enable AMUX + AMUX BUF
+    Reg[0x10F3].set_clr_inv(BIT4|BIT5, BITNONE); // F3[5:4] = 0b11
+
+    // Force trim code = 0
+    Reg[0x105B].set_clr_inv(BITNONE, BIT5|BIT4|BIT3|BIT2|BIT1|BIT0);
+
+    // Bring VN to GPIO9
+    Reg[0x10F2].write(0x0F);
+    delayms(2);
+    Fvi16.CH[GPIO9].mv(VN1);
+
+    // Swap buffer to cancel offset
+    Reg[0x10F3].set_clr_inv(BIT6, BITNONE);
+    delayms(2);
+    Fvi16.CH[GPIO9].mv(VN2);
+
+    FOR_EACH_SITE(nSiteIndex)
+        VN[nSiteIndex] = (VN1[nSiteIndex] + VN2[nSiteIndex]) / 2;
+
+    // Bring VP to GPIO9
+    Reg[0x10F2].write(0x0E);
+    delayms(2);
+    Fvi16.CH[GPIO9].mv(VP1);
+
+    // Swap buffer
+    Reg[0x10F3].set_clr_inv(BIT6, BITNONE);
+    delayms(2);
+    Fvi16.CH[GPIO9].mv(VP2);
+
+    FOR_EACH_SITE(nSiteIndex)
+        VP[nSiteIndex] = (VP1[nSiteIndex] + VP2[nSiteIndex]) / 2;
+
+    FOR_EACH_SITE(nSiteIndex)
+        global_temp[nSiteIndex] = VP[nSiteIndex] - VN[nSiteIndex];
+}
+
+//=========================== Measure VPTAT ===========================//
+void measure_Trim_VPTAT()
+{
+    double VPTAT_1[SITE_MAX], VPTAT_2[SITE_MAX];
+
+    // Enable AMUX + AMUX BUF
+    Reg[0x10F3].set_clr_inv(BIT4|BIT5, BITNONE); // F3[5:4] = 0b11
+
+    // Bring VPTAT to GPIO9
+    Reg[0x10F2].write(0x0A);
+    delayms(2);
+    Fvi16.CH[GPIO9].mv(VPTAT_1);
+
+    // Swap buffer
+    Reg[0x10F3].set_clr_inv(BIT6, BITNONE);
+    delayms(2);
+    Fvi16.CH[GPIO9].mv(VPTAT_2);
+
+    FOR_EACH_SITE(nSiteIndex)
+        global_temp[nSiteIndex] = (VPTAT_1[nSiteIndex] + VPTAT_2[nSiteIndex]) / 2;
+}
+
+//=========================== Trim VPTAT ===========================//
+bool Trim_VPTAT(CFunction *pFunction, int TestNO_target)
+{
+    double VPTAT_OFS[SITE_MAX];
+    double VPTAT[SITE_MAX];
+    double VPTAT_Target = 1.2; 
+
+    // Đo VPTAT_OFS (VP - VN)
+    measure_Trim_VPTAT_OFS();
+    FOR_EACH_SITE(nSiteIndex)
+    {
+        VPTAT_OFS[nSiteIndex] = global_temp[nSiteIndex];
+        pFunction->LogResult(NSITEINDEX, TestNO_target, VPTAT_OFS[nSiteIndex]);
+    }
+
+    // Ghi mã trim ban đầu (0)
+    if(QC_Flag == 0)
+        Reg[0x105B].set_clr_inv(BITNONE, BIT5|BIT4|BIT3|BIT2|BIT1|BIT0);
+
+    // Đo lại VPTAT (sau offset)
+    measure_Trim_VPTAT();
+    FOR_EACH_SITE(nSiteIndex)
+    {
+        VPTAT[nSiteIndex] = global_temp[nSiteIndex];
+        global_Pre[nSiteIndex] = VPTAT[nSiteIndex];
+    }
+
+    // Cấu hình bảng tra
+    global_Trim_table_size = 64;
+    global_trimReg_addr = 0x105B;
+    global_BitHigh = 5;
+    global_BitLow = 0;
+    double LSB = 0.003; 
+    unsigned char code_queue[64];
+    int ratio_queue[64];
+    for (int i = 0; i < 64; ++i) { code_queue[i] = i; ratio_queue[i] = i; }
+
+    FOR_EACH_SITE(nSiteIndex)
+    {
+        global_Target_array[nSiteIndex] = VPTAT_Target;
+        Global_trimcode[nSiteIndex] = get_trim_code_LookupTable(global_Target_array[nSiteIndex], global_Pre[nSiteIndex], LSB, global_Trim_table_size,
+                                                                 code_queue, ratio_queue, global_BitHigh, global_BitLow, global_trimReg_addr, DIFF);
+    }
+
+    // Đo lại VPTAT sau trim
+    measure_Trim_VPTAT();
+    FOR_EACH_SITE(nSiteIndex)
+        global_post[nSiteIndex] = global_temp[nSiteIndex];
+
+    // Tìm mã trim tối ưu nếu cần
+    FOR_EACH_SITE(nSiteIndex)
+    {
+        search_Best_trim_code(global_Target_array[nSiteIndex], global_count_array[nSiteIndex], &global_post[nSiteIndex], &Global_trimcode[nSiteIndex],
+                               global_BitHigh, global_BitLow, global_trimReg_addr);
+    }
+
+    // Log kết quả
+    FOR_EACH_SITE(nSiteIndex)
+    {
+        pFunction->LogResult(NSITEINDEX, TestNO_target + 1, global_post[nSiteIndex]);
+        pFunction->LogResult(NSITEINDEX, TestNO_target + 2, global_Pre[nSiteIndex]);
+        pFunction->LogResult(NSITEINDEX, TestNO_target + 3, Global_trimcode[nSiteIndex]);
+        pFunction->LogResult(NSITEINDEX, TestNO_target + 4, global_Target_array[nSiteIndex]);
+        pFunction->LogResult(NSITEINDEX, TestNO_target + 5, 100 * (global_post[nSiteIndex] - global_Target_array[nSiteIndex]) / global_Target_array[nSiteIndex]);
+    }
+
+    return true;
+}
