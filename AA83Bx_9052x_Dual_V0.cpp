@@ -3670,6 +3670,73 @@ STT_TESTFUNC Trim_LDOs_Vout(CFunction *pFunction, int nSiteNo, int nTestFlag, Tr
 
 //Write LDO ILIM, POK, OV here
 
+// Hàm đo, trim LDO Current Limit (ILIM)
+void Trim_LDO_ILIM(int ldo_idx, double target_ilim) {
+    // 1. Kích hoạt LDO
+    Enable_LDO(ldo_idx, true);
+
+    // 2. Thử từng mã trim, đo dòng đến khi đạt target
+    for (int trim_code = TRIM_ILIM_MIN; trim_code <= TRIM_ILIM_MAX; ++trim_code) {
+        Set_LDO_ILIM_Trim(ldo_idx, trim_code); // Gửi mã trim vào LDO
+        double measured_ilim = Measure_LDO_ILIM(ldo_idx); // Đo dòng giới hạn
+
+        // 3. So sánh với target từ test matrix
+        if (measured_ilim >= target_ilim * 0.98 && measured_ilim <= target_ilim * 1.02) {
+            LogResult("LDO_ILIM", ldo_idx, measured_ilim, trim_code);
+            break;
+        }
+    }
+    Enable_LDO(ldo_idx, false);
+}
+
+// Hàm kiểm tra ngưỡng Power-OK (POK) của LDO
+void Trim_LDO_POK(int ldo_idx, double pok_min, double pok_max) {
+    Enable_LDO(ldo_idx, true);
+
+    double vout = LDO_VMIN;
+    double pok_threshold = 0.0;
+    while (vout <= LDO_VMAX) {
+        Set_LDO_Output(ldo_idx, vout);
+        bool pok_state = Read_LDO_POK(ldo_idx);
+        if (pok_state) {
+            pok_threshold = vout;
+            break;
+        }
+        vout += 0.005;
+    }
+
+    if (pok_threshold >= pok_min && pok_threshold <= pok_max) {
+        LogResult("LDO_POK", ldo_idx, pok_threshold, "PASS");
+    } else {
+        LogResult("LDO_POK", ldo_idx, pok_threshold, "FAIL");
+    }
+    Enable_LDO(ldo_idx, false);
+}
+
+// Hàm kiểm tra, trim ngưỡng Over Voltage (OV) của LDO
+void Trim_LDO_OV(int ldo_idx, double ov_min, double ov_max) {
+    Enable_LDO(ldo_idx, true);
+
+    double vout = LDO_VNOMINAL;
+    double ov_threshold = 0.0;
+    while (vout <= LDO_OV_MAX) {
+        Set_LDO_Output(ldo_idx, vout);
+        bool ov_triggered = Check_LDO_OV(ldo_idx);
+        if (ov_triggered) {
+            ov_threshold = vout;
+            break;
+        }
+        vout += 0.005;
+    }
+
+    if (ov_threshold >= ov_min && ov_threshold <= ov_max) {
+        LogResult("LDO_OV", ldo_idx, ov_threshold, "PASS");
+    } else {
+        LogResult("LDO_OV", ldo_idx, ov_threshold, "FAIL");
+    }
+    Enable_LDO(ldo_idx, false);
+}
+
 // Test Function: Trim_LDO_OSC
 STT_TESTFUNC Trim_LDO_OSC(CFunction *pFunction, int nSiteNo, int nTestFlag, Trim_LDO_OSC_params* ours)
 {
